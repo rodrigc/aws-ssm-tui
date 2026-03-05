@@ -15,10 +15,13 @@ use ui::ssm::{run_ssm_app, SSMApp};
 #[tokio::main]
 async fn main() -> Result<()> {
     println!("Loading AWS configuration...");
-    
+
     // Load profiles once at startup
     let profiles = aws::profile::list::load_profiles().await?;
     println!("Found {} profiles", profiles.len());
+
+    // Try to detect usable default
+    let initial_profile = aws::profile::default::detect_default_profile().await;
 
     // Setup terminal
     enable_raw_mode()?;
@@ -27,15 +30,20 @@ async fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Start with SSM app
-    let mut current_app = CurrentApp::SSM;
-    
+    // If we do not have a usable profile, start with the Profile app.
+    // If we have a usable profile, start with the SSM app
+    let mut current_app = if initial_profile.is_some() {
+        CurrentApp::SSM
+    } else {
+        CurrentApp::Profile
+    };
+
     let result = loop {
         match current_app {
             CurrentApp::SSM => {
                 let app = SSMApp::new().await?;
                 println!("Found {} instances", app.instances.len());
-                
+
                 match run_ssm_app(&mut terminal, app).await? {
                     ui::ssm::AppAction::Quit => break Ok(()),
                     ui::ssm::AppAction::SwitchToProfileSelect => {
@@ -45,7 +53,7 @@ async fn main() -> Result<()> {
             }
             CurrentApp::Profile => {
                 let app = ProfileApp::new(profiles.clone());
-                
+
                 // ProfileApp only returns SwitchToSSM now
                 run_profile_app(&mut terminal, app).await?;
                 current_app = CurrentApp::SSM;
