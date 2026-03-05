@@ -9,6 +9,7 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
+use tui_logger::LevelFilter;
 use ui::profile::{run_profile_app, ProfileApp};
 use ui::ssm::{run_ssm_app, SSMApp};
 
@@ -23,6 +24,8 @@ async fn main() -> Result<()> {
     // Try to detect usable default
     let initial_profile = aws::profile::default::detect_default_profile().await;
 
+    tui_logger::init_logger(LevelFilter::Trace).unwrap();
+    tui_logger::set_default_level(LevelFilter::Trace);
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -42,7 +45,7 @@ async fn main() -> Result<()> {
         match current_app {
             CurrentApp::SSM => {
                 let app = SSMApp::new().await?;
-                println!("Found {} instances", app.instances.len());
+                tracing::info!("Found {} instances", app.instances.len());
 
                 match run_ssm_app(&mut terminal, app).await? {
                     ui::ssm::AppAction::Quit => break Ok(()),
