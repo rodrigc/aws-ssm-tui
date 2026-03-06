@@ -1,6 +1,8 @@
+use crate::aws::profile::default::detect_default_profile;
 use crate::aws::profile::list::ProfileInfo;
 use crate::aws::ssm::InstanceInfo;
 use anyhow::Result;
+use aws_config::BehaviorVersion;
 use crossterm::event::{self, Event, KeyCode};
 use ratatui::{
     layout::{Constraint, Direction, Layout},
@@ -24,12 +26,25 @@ pub struct SSMApp {
     profiles_state: ListState,
     current_profile: String,
     loading: bool,
+    pub client: aws_sdk_ssm::Client,
 }
 
 impl SSMApp {
     pub async fn new() -> Result<Self> {
-        let current_profile = String::from("CURRENT"); //aws::profile::get_current_profile();
+        //let current_profile = String::from("CURRENT"); //aws::profile::get_current_profile();
+        let current_profile = detect_default_profile()
+            .await
+            .unwrap_or_else(|| "default".to_string());
+
         let profiles = crate::aws::profile::list::load_profiles().await?;
+
+        // Build the config using the detected/current profile
+        let config = aws_config::defaults(BehaviorVersion::latest())
+            .profile_name(&current_profile)
+            .load()
+            .await;
+
+        let client = aws_sdk_ssm::Client::new(&config);
         let instances = crate::aws::ssm::get_instances().await?;
 
         let mut instances_state = ListState::default();
@@ -53,6 +68,7 @@ impl SSMApp {
             profiles_state,
             current_profile,
             loading: false,
+            client,
         })
     }
 
@@ -192,7 +208,7 @@ pub fn ui_instances(f: &mut ratatui::Frame, app: &mut SSMApp) {
     let title = if app.loading {
         "SSM Instances (Loading...)"
     } else {
-        "SSM Instances (↑/↓ to navigate, 'p' to switch profile, 'q' to quit)"
+        "SSM Instances (↑/↓ to navigate, 's' to start session, 'p' to switch profile, 'q' to quit)"
     };
 
     let list = List::new(items)
