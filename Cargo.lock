@@ -120,6 +120,7 @@ dependencies = [
  "crossterm",
  "log",
  "ratatui 0.29.0",
+ "scopeguard",
  "serde_json",
  "tokio",
  "tracing",
