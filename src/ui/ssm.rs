@@ -4,6 +4,7 @@ use crate::aws::ssm::InstanceInfo;
 use anyhow::Result;
 use aws_config::BehaviorVersion;
 use crossterm::event::{self, Event, KeyCode};
+use log::info;
 use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
@@ -12,9 +13,11 @@ use ratatui::{
     Terminal,
 };
 
+use crate::ui::profile::AppAction;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Screen {
-    Instances,
+    SSMInstances,
     ProfileSelect,
 }
 
@@ -61,7 +64,7 @@ impl SSMApp {
         }
 
         Ok(Self {
-            screen: Screen::Instances,
+            screen: Screen::SSMInstances,
             instances,
             instances_state,
             profiles,
@@ -164,8 +167,8 @@ impl SSMApp {
 
     fn toggle_screen(&mut self) {
         self.screen = match self.screen {
-            Screen::Instances => Screen::ProfileSelect,
-            Screen::ProfileSelect => Screen::Instances,
+            Screen::SSMInstances => Screen::ProfileSelect,
+            Screen::ProfileSelect => Screen::SSMInstances,
         };
     }
 }
@@ -283,14 +286,9 @@ pub fn ui_profile_select(f: &mut ratatui::Frame, app: &mut SSMApp) {
 
 pub fn ui(f: &mut ratatui::Frame, app: &mut SSMApp) {
     match app.screen {
-        Screen::Instances => ui_instances(f, app),
+        Screen::SSMInstances => ui_instances(f, app),
         Screen::ProfileSelect => ui_profile_select(f, app),
     }
-}
-
-pub enum AppAction {
-    Quit,
-    SwitchToProfileSelect,
 }
 
 pub async fn run_ssm_app<B: ratatui::backend::Backend>(
@@ -302,15 +300,20 @@ pub async fn run_ssm_app<B: ratatui::backend::Backend>(
 
         if let Event::Key(key) = event::read()? {
             match app.screen {
-                Screen::Instances => match key.code {
+                Screen::SSMInstances => match key.code {
                     KeyCode::Char('q') => return Ok(AppAction::Quit),
                     KeyCode::Char('p') => return Ok(AppAction::SwitchToProfileSelect),
+                    KeyCode::Char('s') => {
+                        info!("START SESSION")
+                    }
                     KeyCode::Down => app.next_instance(),
                     KeyCode::Up => app.previous_instance(),
                     _ => {}
                 },
                 Screen::ProfileSelect => match key.code {
-                    KeyCode::Char('q') => return Ok(AppAction::Quit),
+                    KeyCode::Char('q') | KeyCode::Char('p') => {
+                        return Ok(AppAction::SwitchToSSMInstances)
+                    }
                     KeyCode::Char('p') => app.toggle_screen(),
                     KeyCode::Down => app.next_profile(),
                     KeyCode::Up => app.previous_profile(),

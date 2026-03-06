@@ -11,6 +11,14 @@ use ratatui::{
 
 use crate::aws::profile::list::ProfileInfo;
 
+pub enum AppAction {
+    Quit,
+    SwitchToProfileSelect,
+    SwitchToSSMInstances,
+    RefreshInstances,
+    LaunchSSMSession(String), // String = instance_id
+}
+
 pub struct ProfileApp {
     profiles: Vec<ProfileInfo>,
     list_state: ListState,
@@ -73,7 +81,10 @@ impl ProfileApp {
 
     pub fn select_current(&mut self) {
         if let Some(i) = self.list_state.selected() {
-            self.activate_profile = Some(self.profiles[i].name.clone());
+            let selected_name = self.profiles[i].name.clone();
+            std::env::set_var("AWS_PROFILE", &selected_name);
+            self.activate_profile = Some(selected_name.clone());
+            self.jump_to_selected();
         }
     }
 
@@ -214,11 +225,6 @@ pub fn ui(f: &mut ratatui::Frame, app: &mut ProfileApp) {
     f.render_widget(info_paragraph, inner[1]);
 }
 
-pub enum AppAction {
-    Quit,
-    SwitchToSSM,
-}
-
 pub async fn run_profile_app<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     mut app: ProfileApp,
@@ -228,8 +234,8 @@ pub async fn run_profile_app<B: ratatui::backend::Backend>(
 
         if let Event::Key(key) = event::read()? {
             match key.code {
-                KeyCode::Char('q') => return Ok(AppAction::Quit),
-                KeyCode::Char('p') => return Ok(AppAction::SwitchToSSM),
+                KeyCode::Char('q') => return Ok(AppAction::SwitchToSSMInstances),
+                KeyCode::Char('p') => return Ok(AppAction::SwitchToProfileSelect),
                 KeyCode::Down => app.next(),
                 KeyCode::Up => app.previous(),
                 KeyCode::Enter => {

@@ -48,16 +48,17 @@ async fn main() -> Result<()> {
                 tracing::info!("Found {} instances", app.instances.len());
 
                 match run_ssm_app(&mut terminal, app).await? {
-                    ui::ssm::AppAction::Quit => break Ok(()),
-                    ui::ssm::AppAction::SwitchToProfileSelect => {
+                    ui::profile::AppAction::Quit => break Ok(()),
+                    ui::profile::AppAction::SwitchToProfileSelect => {
                         current_app = CurrentApp::Profile;
                     }
+                    _ => {}
                 }
             }
             CurrentApp::Profile => {
                 let app = ProfileApp::new(profiles.clone());
 
-                // ProfileApp only returns SwitchToSSM now
+                // ProfileApp only returns SwitchToSSMInstances now
                 run_profile_app(&mut terminal, app).await?;
                 current_app = CurrentApp::SSM;
             }
