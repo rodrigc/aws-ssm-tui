@@ -8,6 +8,7 @@ use which::which;
 #[derive(Debug, Clone)]
 pub struct InstanceInfo {
     pub instance_id: String,
+    pub computer_name: String,
     pub platform_type: String,
     pub platform_name: String,
     pub resource_type: String,
@@ -36,6 +37,7 @@ pub async fn get_instances() -> Result<Vec<InstanceInfo>> {
     for instance in response.instance_information_list() {
         instances.push(InstanceInfo {
             instance_id: instance.instance_id().unwrap_or("N/A").to_string(),
+            computer_name: instance.computer_name().unwrap_or("").to_string(),
             platform_type: instance
                 .platform_type()
                 .map(|p| p.as_str())

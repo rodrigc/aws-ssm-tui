@@ -199,6 +199,7 @@ pub fn ui_instances(f: &mut ratatui::Frame, app: &mut SSMApp) {
         .iter()
         .map(|instance| {
             let content = Line::from(vec![
+                Span::raw(format!("{:20} ", instance.computer_name)),
                 Span::raw(format!("{:20} ", instance.instance_id)),
                 Span::raw(format!("{:15} ", instance.platform_type)),
                 Span::raw(format!("{:15} ", instance.platform_name)),
