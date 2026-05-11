@@ -1,5 +1,4 @@
 use aws_runtime::env_config::file::EnvConfigFiles;
-use aws_types::os_shim_internal::{Env, Fs};
 
 /// Tries to see if we can load a default-ish config without fatal errors
 /// Returns Some(profile_name) if usable, None if we need user to choose
