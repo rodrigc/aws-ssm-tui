@@ -1,5 +1,6 @@
 mod aws;
 mod ui;
+mod utils;
 
 use ui::ssm::{run_ssm_app, SSMApp};
 

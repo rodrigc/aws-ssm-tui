@@ -4,6 +4,7 @@ use crate::aws::ssm::InstanceInfo;
 use crate::ui::profile::ProfileSelect;
 use crate::ui::screen::Screen;
 use crate::ui::ssm_instances::SSMInstancesScreen;
+use crate::utils::constants::env;
 use aws_config::BehaviorVersion;
 use color_eyre::Result;
 use crossterm::event::{self, Event, KeyEventKind};
@@ -92,7 +93,7 @@ impl SSMApp {
 
             self.client = aws_sdk_ssm::Client::new(&config);
             self.current_profile = profile_name;
-            std::env::set_var("AWS_PROFILE", &self.current_profile);
+            std::env::set_var(env::AWS_PROFILE_ENV_VAR, &self.current_profile);
 
             // Optionally auto-refresh instances
             self.refresh_instances_requested = true;

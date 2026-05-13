@@ -1,3 +1,4 @@
+use crate::utils::constants::env;
 use anyhow::{bail, Context, Result};
 use aws_config::BehaviorVersion;
 use aws_sdk_ssm::{types::InstanceInformationStringFilter, types::PingStatus, Client};
@@ -126,7 +127,7 @@ pub async fn start_interactive_ssm(client: &Client, instance_id: &str) -> Result
         .map(|r| r.as_ref().to_string())
         .unwrap_or_else(|| "us-east-1".to_string());
 
-    let profile = std::env::var("AWS_PROFILE").unwrap_or_default();
+    let profile = std::env::var(env::AWS_PROFILE_ENV_VAR).unwrap_or_default();
 
     println!("Region          : {}", region);
     println!("Profile         : {}", profile);

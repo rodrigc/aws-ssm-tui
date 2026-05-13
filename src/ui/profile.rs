@@ -1,6 +1,7 @@
 use crate::ui::screen::Screen;
 use crate::ui::ssm::SSMApp;
 use crate::ui::ssm_instances::SSMInstancesScreen;
+use crate::utils::constants::env;
 use crossterm::event::KeyCode;
 use ratatui::Frame;
 use ratatui::{
@@ -22,7 +23,7 @@ impl ProfileSelect {
     pub fn new(profiles: &[ProfileInfo]) -> Self {
         let mut screen = Self {
             list_state: ListState::default(),
-            activate_profile: std::env::var("AWS_PROFILE")
+            activate_profile: std::env::var(env::AWS_PROFILE_ENV_VAR)
                 .ok()
                 .or_else(|| Some("".to_string())),
         };

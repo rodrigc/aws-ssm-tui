@@ -1,10 +1,11 @@
+use crate::utils::constants::env;
 use aws_runtime::env_config::file::EnvConfigFiles;
 
 /// Tries to see if we can load a default-ish config without fatal errors
 /// Returns Some(profile_name) if usable, None if we need user to choose
 pub async fn detect_default_profile() -> Option<String> {
     // First check env var (highest precedence)
-    if let Ok(profile) = std::env::var("AWS_PROFILE") {
+    if let Ok(profile) = std::env::var(env::AWS_PROFILE_ENV_VAR) {
         return Some(profile);
     }
 
