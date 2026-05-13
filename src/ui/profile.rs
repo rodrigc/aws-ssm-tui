@@ -1,249 +1,198 @@
-use anyhow::Result;
-use crossterm::event;
-use crossterm::event::{Event, KeyCode};
+use crate::ui::screen::Screen;
+use crate::ui::ssm::SSMApp;
+use crate::ui::ssm_instances::SSMInstancesScreen;
+use crossterm::event::KeyCode;
+use ratatui::Frame;
 use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
-    text::{Line, Span},
+    text::Line,
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
-    Terminal,
 };
 
 use crate::aws::profile::list::ProfileInfo;
 
-pub enum AppAction {
-    Quit,
-    SwitchToProfileSelect,
-    SwitchToSSMInstances,
-    RefreshInstances,
-    LaunchSSMSession(String), // String = instance_id
-}
-
-pub struct ProfileApp {
-    profiles: Vec<ProfileInfo>,
+#[derive(Default, Debug, Clone, PartialEq)]
+pub struct ProfileSelect {
     list_state: ListState,
     activate_profile: Option<String>,
 }
 
-impl ProfileApp {
-    pub fn new(profiles: Vec<ProfileInfo>) -> Self {
-        let list_state = ListState::default();
-
-        // Get the current selected profile from environment or default
-        let activate_profile = std::env::var("AWS_PROFILE")
-            .ok()
-            .or_else(|| Some("default".to_string()));
-
-        let mut app = Self {
-            profiles,
-            list_state,
-            activate_profile,
+impl ProfileSelect {
+    pub fn new(profiles: &[ProfileInfo]) -> Self {
+        let mut screen = Self {
+            list_state: ListState::default(),
+            activate_profile: std::env::var("AWS_PROFILE")
+                .ok()
+                .or_else(|| Some("".to_string())),
         };
 
-        // Jump to the selected profile in the list (or select first if not found)
-        app.jump_to_selected();
+        screen.jump_to_selected(profiles);
 
-        // If still nothing selected and we have profiles, select the first one
-        if app.list_state.selected().is_none() && !app.profiles.is_empty() {
-            app.list_state.select(Some(0));
+        if screen.list_state.selected().is_none() && !profiles.is_empty() {
+            screen.list_state.select(Some(0));
         }
 
-        app
+        screen
     }
 
-    pub fn next(&mut self) {
-        let i = match self.list_state.selected() {
-            Some(i) => {
-                if i >= self.profiles.len() - 1 {
-                    0
-                } else {
-                    i + 1
-                }
-            }
-            None => 0,
-        };
-        self.list_state.select(Some(i));
-    }
-
-    pub fn previous(&mut self) {
-        let i = match self.list_state.selected() {
-            Some(i) => {
-                if i == 0 {
-                    self.profiles.len() - 1
-                } else {
-                    i - 1
-                }
-            }
-            None => 0,
-        };
-        self.list_state.select(Some(i));
-    }
-
-    pub fn select_current(&mut self) {
-        if let Some(i) = self.list_state.selected() {
-            let selected_name = self.profiles[i].name.clone();
-            std::env::set_var("AWS_PROFILE", &selected_name);
-            self.activate_profile = Some(selected_name.clone());
-            self.jump_to_selected();
-        }
-    }
-
-    pub fn jump_to_selected(&mut self) {
-        if let Some(selected_name) = &self.activate_profile {
-            if let Some(index) = self.profiles.iter().position(|p| &p.name == selected_name) {
-                self.list_state.select(Some(index));
+    fn jump_to_selected(&mut self, profiles: &[ProfileInfo]) {
+        if let Some(selected) = &self.activate_profile {
+            if let Some(idx) = profiles.iter().position(|p| &p.name == selected) {
+                self.list_state.select(Some(idx));
             }
         }
     }
 
-    pub fn get_highlighted_profile(&self) -> Option<&ProfileInfo> {
-        self.list_state.selected().map(|i| &self.profiles[i])
+    fn get_highlighted_profile<'a>(&self, profiles: &'a [ProfileInfo]) -> Option<&'a ProfileInfo> {
+        self.list_state.selected().and_then(|i| profiles.get(i))
     }
-
-    /*
-    fn get_activate_profile_info(&self) -> Option<&ProfileInfo> {
-        self.activate_profile
-            .as_ref()
-            .and_then(|name| self.profiles.iter().find(|p| &p.name == name))
-    }
-    */
 }
 
-pub fn ui(f: &mut ratatui::Frame, app: &mut ProfileApp) {
-    let outer = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // Active profile
-            Constraint::Fill(1),   // bottom: grows / fills remaining space
-        ])
-        .split(f.area());
+impl Screen for ProfileSelect {
+    fn name(&self) -> &'static str {
+        "AWS Profile Select"
+    }
 
-    let inner = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Min(5), // Profile list
-            Constraint::Min(8), // Profile info
-        ])
-        .split(outer[1]);
+    fn draw(&self, frame: &mut Frame, app: &SSMApp) {
+        let outer = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(3), Constraint::Fill(1)])
+            .split(frame.area());
 
-    // Active profile
-    let selected_text = if let Some(profile_name) = &app.activate_profile {
-        format!("Active Profile: {}", profile_name)
-    } else {
-        "Active Profile: None".to_string()
-    };
+        let inner = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(outer[1]);
 
-    let selected_paragraph = Paragraph::new(selected_text)
-        .block(
+        // Active Profile
+        let active_text = match &self.activate_profile {
+            Some(name) => format!("Active Profile: {}", name),
+            None => "Active Profile: None".to_string(),
+        };
+
+        let active_para = Paragraph::new(active_text)
+            .block(Block::default().borders(Borders::ALL))
+            .style(
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            );
+
+        frame.render_widget(active_para, outer[0]);
+
+        // Profiles List
+        let items: Vec<ListItem> = app
+            .profiles
+            .iter()
+            .map(|p| {
+                let is_active = self.activate_profile.as_ref().is_some_and(|n| n == &p.name);
+                let prefix = if is_active { "* " } else { "  " };
+                let style = if is_active {
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+
+                ListItem::new(Line::from(format!("{prefix}{}", p.name))).style(style)
+            })
+            .collect();
+
+        let list = List::new(items)
+            .block(
+                Block::default()
+                    .title("AWS Profiles (↑↓ navigate, Enter select, q quit)")
+                    .borders(Borders::ALL),
+            )
+            .highlight_style(
+                Style::default()
+                    .bg(Color::Blue)
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .highlight_symbol(">> ");
+
+        frame.render_stateful_widget(list, inner[0], &mut self.list_state.clone());
+
+        // Profile Info
+        let info_text = if let Some(profile) = self.get_highlighted_profile(&app.profiles) {
+            let mut lines = vec![format!("Profile: {}", profile.name)];
+            if let Some(r) = &profile.region {
+                lines.push(format!("Region: {}", r));
+            }
+            if let Some(u) = &profile.sso_start_url {
+                lines.push(format!("SSO URL: {}", u));
+            }
+            if let Some(a) = &profile.sso_account_id {
+                lines.push(format!("Account: {}", a));
+            }
+            if let Some(r) = &profile.sso_role_name {
+                lines.push(format!("Role: {}", r));
+            }
+            lines.join("\n")
+        } else {
+            "No profile selected".to_string()
+        };
+
+        let info_para = Paragraph::new(info_text).block(
             Block::default()
-                //.title("Current Selection")
+                .title("Profile Information")
                 .borders(Borders::ALL),
-        )
-        .style(
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
         );
 
-    f.render_widget(selected_paragraph, outer[0]);
-    // Profile list
-    let items: Vec<ListItem> = app
-        .profiles
-        .iter()
-        .map(|profile| {
-            let is_active = app
-                .activate_profile
-                .as_ref()
-                .is_some_and(|name| name == &profile.name);
+        frame.render_widget(info_para, inner[1]);
+    }
 
-            // Prefix only the active one with *
-            let prefix = if is_active { "* " } else { "  " }; // two spaces to keep alignment
-
-            let text = format!("{prefix}{}", profile.name);
-            let span = Span::raw(text);
-
-            // Optional: give active profiles a different style (even when not highlighted)
-            let style = if is_active {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-
-            ListItem::new(Line::from(span)).style(style)
-        })
-        .collect();
-
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .title("AWS Profiles (↑/↓ to navigate, Enter to select, q to quit)")
-                .borders(Borders::ALL),
-        )
-        .highlight_style(
-            Style::default()
-                .bg(Color::Blue)
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol(">> ");
-
-    f.render_stateful_widget(list, inner[0], &mut app.list_state);
-
-    // Profile info for the highlighted profile
-    let info_text = if let Some(profile) = app.get_highlighted_profile() {
-        let mut lines = vec![format!("Profile: {}", profile.name)];
-
-        if let Some(region) = &profile.region {
-            lines.push(format!("Region: {}", region));
-        }
-
-        if let Some(sso_url) = &profile.sso_start_url {
-            lines.push(format!("SSO Start URL: {}", sso_url));
-        }
-
-        if let Some(account_id) = &profile.sso_account_id {
-            lines.push(format!("SSO Account ID: {}", account_id));
-        }
-
-        if let Some(role_name) = &profile.sso_role_name {
-            lines.push(format!("SSO Role Name: {}", role_name));
-        }
-
-        lines.join("\n")
-    } else {
-        "No profile selected".to_string()
-    };
-
-    let info_paragraph = Paragraph::new(info_text).block(
-        Block::default()
-            .title("Profile Information (highlighted)")
-            .borders(Borders::ALL),
-    );
-
-    f.render_widget(info_paragraph, inner[1]);
-}
-
-pub async fn run_profile_app<B: ratatui::backend::Backend>(
-    terminal: &mut Terminal<B>,
-    mut app: ProfileApp,
-) -> Result<AppAction> {
-    loop {
-        terminal.draw(|f| ui(f, &mut app))?;
-
-        if let Event::Key(key) = event::read()? {
-            match key.code {
-                KeyCode::Char('q') => return Ok(AppAction::SwitchToSSMInstances),
-                KeyCode::Char('p') => return Ok(AppAction::SwitchToProfileSelect),
-                KeyCode::Down => app.next(),
-                KeyCode::Up => app.previous(),
-                KeyCode::Enter => {
-                    app.select_current();
-                    // Optionally, you could break here to exit after selection
-                }
-                _ => {}
+    fn handle_event(&mut self, app: &mut SSMApp, key: KeyCode) -> Option<Box<dyn Screen>> {
+        match key {
+            KeyCode::Down => {
+                let i = match self.list_state.selected() {
+                    Some(i) if i < app.profiles.len().saturating_sub(1) => i + 1,
+                    _ => 0,
+                };
+                self.list_state.select(Some(i));
+                None
             }
+
+            KeyCode::Up => {
+                let i = match self.list_state.selected() {
+                    Some(0) => app.profiles.len().saturating_sub(1), // wrap around to last item
+                    Some(i) => i - 1,
+                    None => 0,
+                };
+                self.list_state.select(Some(i));
+                None
+            }
+
+            KeyCode::Enter => {
+                if let Some(i) = self.list_state.selected() {
+                    if let Some(profile) = app.profiles.get(i) {
+                        let name = profile.name.clone();
+                        app.switch_profile(name.clone());
+
+                        self.activate_profile = Some(name.clone());
+                        app.current_profile = name;
+                        self.jump_to_selected(&app.profiles);
+                    }
+                }
+                None
+            }
+
+            KeyCode::Char('i') => Some(Box::new(SSMInstancesScreen::new(&app.instances))),
+
+            KeyCode::Char('q') | KeyCode::Esc => {
+                app.quit();
+                None
+            }
+
+            KeyCode::Char('l') | KeyCode::Char('L') => {
+                app.logger.toggle();
+                None
+            }
+
+            _ => None,
         }
     }
 }

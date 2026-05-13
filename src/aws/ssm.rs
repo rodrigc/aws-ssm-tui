@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 use aws_config::BehaviorVersion;
-use aws_sdk_ssm::{types::InstanceInformationStringFilter, Client};
+use aws_sdk_ssm::{types::InstanceInformationStringFilter, types::PingStatus, Client};
 use serde_json;
 use std::process::{Command, Stdio};
 use which::which;
@@ -9,6 +9,7 @@ use which::which;
 pub struct InstanceInfo {
     pub instance_id: String,
     pub computer_name: String,
+    pub ping_status: String,
     pub platform_type: String,
     pub platform_name: String,
     pub resource_type: String,
@@ -25,33 +26,50 @@ pub async fn get_instances() -> Result<Vec<InstanceInfo>> {
         .values("Success")
         .build()?;
 
-    // Call describe_instance_information with the filter
-    let response = client
-        .describe_instance_information()
-        .filters(filter)
-        .send()
-        .await?;
-
     let mut instances = Vec::new();
+    let mut next_token: Option<String> = None;
 
-    for instance in response.instance_information_list() {
-        instances.push(InstanceInfo {
-            instance_id: instance.instance_id().unwrap_or("N/A").to_string(),
-            computer_name: instance.computer_name().unwrap_or("").to_string(),
-            platform_type: instance
-                .platform_type()
-                .map(|p| p.as_str())
-                .unwrap_or("N/A")
-                .to_string(),
-            platform_name: instance.platform_name().unwrap_or("N/A").to_string(),
-            resource_type: instance
-                .resource_type()
-                .map(|r| r.as_str())
-                .unwrap_or("N/A")
-                .to_string(),
-        });
+    loop {
+        // Call describe_instance_information with the filter
+        let mut request = client
+            .describe_instance_information()
+            .filters(filter.clone())
+            .max_results(50);
+
+        if let Some(token) = next_token {
+            request = request.next_token(token);
+        }
+
+        let response = request.send().await?;
+
+        for instance in response.instance_information_list() {
+            instances.push(InstanceInfo {
+                instance_id: instance.instance_id().unwrap_or("N/A").to_string(),
+                computer_name: instance.computer_name().unwrap_or("").to_string(),
+                ping_status: instance
+                    .ping_status()
+                    .unwrap_or(&PingStatus::Inactive)
+                    .to_string(),
+                platform_type: instance
+                    .platform_type()
+                    .map(|p| p.as_str())
+                    .unwrap_or("N/A")
+                    .to_string(),
+                platform_name: instance.platform_name().unwrap_or("N/A").to_string(),
+                resource_type: instance
+                    .resource_type()
+                    .map(|r| r.as_str())
+                    .unwrap_or("N/A")
+                    .to_string(),
+            });
+        }
+
+        next_token = response.next_token().map(|s| s.to_string());
+
+        if next_token.is_none() {
+            break;
+        }
     }
-
     Ok(instances)
 }
 
@@ -63,7 +81,7 @@ pub async fn start_ssm_session(
     let output = client
         .start_session()
         .target(instance_id)
-        .document_name(document_name.unwrap_or("AWS-StartInteractiveCommand"))
+        .document_name(document_name.unwrap_or("AWS-StartSession"))
         .send()
         .await?;
 
@@ -73,25 +91,21 @@ pub async fn start_ssm_session(
 /// Starts an interactive SSM session using the session-manager-plugin.
 ///
 /// The region is taken directly from the client's config (which comes from the selected profile).
-pub async fn start_interactive_ssm(
-    client: &Client,
-    instance_id: &str,
-    document_name: &str, // e.g. "AWS-StartInteractiveCommand"
-) -> Result<()> {
-    // 1. Call StartSession API using the existing client (already configured with profile)
+pub async fn start_interactive_ssm(client: &Client, instance_id: &str) -> Result<()> {
+    println!("=== Starting SSM Session (SDK) ===");
+    println!("Target Instance : {}", instance_id);
+
     let output = client
         .start_session()
         .target(instance_id)
-        .document_name(document_name)
         .send()
         .await
-        .context("Failed to start SSM session via SDK")?;
+        .context("StartSession API failed")?;
 
-    let session_id = output.session_id().context("Missing session ID")?;
-    let stream_url = output.stream_url().context("Missing stream URL")?;
-    let token_value = output.token_value().context("Missing token value")?;
+    let session_id = output.session_id().context("No session ID")?;
+    let stream_url = output.stream_url().context("No stream URL")?;
+    let token_value = output.token_value().context("No token value")?;
 
-    // 2. Build JSON payload for the plugin
     let plugin_input = serde_json::json!({
         "Target":     instance_id,
         "SessionId":  session_id,
@@ -99,45 +113,77 @@ pub async fn start_interactive_ssm(
         "TokenValue": token_value,
     });
 
+    let parameters = serde_json::json!({
+        "Target":     instance_id,
+    });
+
     let plugin_input_str = plugin_input.to_string();
+    let plugin_exe = which("session-manager-plugin").context("Plugin not found")?;
 
-    // 3. Find session-manager-plugin in PATH
-    let plugin_exe = which("session-manager-plugin")
-        .context(
-            "session-manager-plugin not found in PATH. \
-             Please install it: https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html"
-        )?;
-
-    // 4. Get the region directly from the client's config
     let region = client
         .config()
         .region()
-        .context("No region found in the current SDK config (profile missing region?)")?
-        .as_ref()
-        .to_string();
+        .map(|r| r.as_ref().to_string())
+        .unwrap_or_else(|| "us-east-1".to_string());
 
-    // Optional: you can log this for debugging (file or TUI status)
-    // eprintln!("Using region from profile: {}", region);
+    let profile = std::env::var("AWS_PROFILE").unwrap_or_default();
 
-    // 5. Spawn the plugin with the profile's region
+    println!("Region          : {}", region);
+    println!("Profile         : {}", profile);
+    println!("Plugin Path     : {}", plugin_exe.display());
+    println!(
+        "Full Command    : {} \"{}\" {} StartSession {} {{}} \"\"",
+        plugin_exe.display(),
+        plugin_input_str,
+        region,
+        profile
+    );
+
     let mut child = Command::new(plugin_exe)
-        .arg(&plugin_input_str) // JSON payload
-        .arg(&region) // region from active profile
-        .arg("StartSession") // mode
-        .arg("") // profile name (empty = use current credential chain)
-        .arg("{}") // extra params (empty object)
-        .arg("") // SSM endpoint override (empty = default)
+        .arg(plugin_input.to_string()) // 1. JSON payload
+        .arg(region) // 2. Region
+        .arg("StartSession") // 3. Action
+        .arg(profile) // 4. Profile name (important for SSO)
+        .arg(parameters.to_string()) // 5. Parameters
+        .arg("") // 6. Endpoint override
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .spawn()
         .context("Failed to spawn session-manager-plugin")?;
 
-    // 6. Wait for the user to exit the interactive session
-    let status = child.wait().context("Session process error")?;
+    let status = child.wait()?;
 
     if !status.success() {
-        bail!("SSM session exited with code: {:?}", status.code());
+        bail!("Plugin exited with code: {:?}", status.code());
+    }
+
+    Ok(())
+}
+
+/// Starts an SSM session by calling the AWS CLI directly.
+/// This is the most reliable method when using AWS SSO profiles.
+pub async fn start_interactive_ssm_with_aws_cli(instance_id: &str, profile: &str) -> Result<()> {
+    println!(
+        "Starting SSM session on {} using profile '{}'...",
+        instance_id, profile
+    );
+
+    let status = std::process::Command::new("aws")
+        .arg("ssm")
+        .arg("start-session")
+        .arg("--target")
+        .arg(instance_id)
+        .arg("--profile")
+        .arg(profile)
+        .status()
+        .context("Failed to execute aws ssm start-session")?;
+
+    if !status.success() {
+        bail!(
+            "aws ssm start-session exited with code: {:?}",
+            status.code()
+        );
     }
 
     Ok(())
