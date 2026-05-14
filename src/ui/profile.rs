@@ -188,7 +188,7 @@ impl Screen for ProfileSelect {
                 None
             }
 
-            KeyCode::Char('l') | KeyCode::Char('L') => {
+            KeyCode::Char('l') => {
                 app.logger.toggle();
                 None
             }
