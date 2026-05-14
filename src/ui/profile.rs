@@ -25,7 +25,7 @@ impl ProfileSelect {
             list_state: ListState::default(),
             activate_profile: std::env::var(env::AWS_PROFILE_ENV_VAR)
                 .ok()
-                .or_else(|| Some("".to_string())),
+                .or_else(|| Some(String::default())),
         };
 
         screen.jump_to_selected(profiles);
@@ -188,7 +188,7 @@ impl Screen for ProfileSelect {
                 None
             }
 
-            KeyCode::Char('l') | KeyCode::Char('L') => {
+            KeyCode::Char('l') => {
                 app.logger.toggle();
                 None
             }

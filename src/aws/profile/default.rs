@@ -16,7 +16,10 @@ pub async fn detect_default_profile() -> Option<String> {
 
     let profile_set = match aws_config::profile::load(&fs, &env, &files, None).await {
         Ok(set) => set,
-        Err(_) => return None,
+        Err(e) => {
+            tracing::error!("Error loading profile: {}", e);
+            return None;
+        }
     };
 
     // If there's a "default" profile (even if empty-ish), consider it usable

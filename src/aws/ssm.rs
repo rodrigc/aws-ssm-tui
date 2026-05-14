@@ -189,26 +189,3 @@ pub async fn start_interactive_ssm_with_aws_cli(instance_id: &str, profile: &str
 
     Ok(())
 }
-
-pub fn print_instances_table(instances: &[InstanceInfo]) {
-    println!("\n---------------------------------------------------------------");
-    println!("|                DescribeInstanceInformation                  |");
-    println!("+---------------------+----------------+--------------+---------------+");
-    println!(
-        "| {:19} | {:14} | {:12} | {:13} |",
-        "InstanceId", "PlatformType", "PlatformName", "ResourceType"
-    );
-    println!("+---------------------+----------------+--------------+---------------+");
-
-    for instance in instances {
-        println!(
-            "| {:19} | {:14} | {:12} | {:13} |",
-            instance.instance_id,
-            instance.platform_type,
-            instance.platform_name,
-            instance.resource_type
-        );
-    }
-
-    println!("+---------------------+----------------+--------------+---------------+");
-}
