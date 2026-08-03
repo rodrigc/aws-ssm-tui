@@ -26,7 +26,7 @@ pub async fn load_profiles() -> Result<Vec<ProfileInfo>> {
         let region = profile.and_then(|p| p.get("region")).map(|s| s.to_string());
         let sso_start_url = profile
             .and_then(|p| p.get("sso_start_url"))
-            .map(|s| s.to_string());
+            .map(String::from);
         let sso_account_id = profile
             .and_then(|p| p.get("sso_account_id"))
             .map(|s| s.to_string());

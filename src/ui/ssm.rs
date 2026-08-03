@@ -1,41 +1,55 @@
+use crate::aws::profile::default::detect_default_profile;
 use crate::aws::profile::list::ProfileInfo;
 use crate::aws::ssm::InstanceInfo;
-use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode};
-use ratatui::{
-    layout::{Constraint, Direction, Layout},
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
-    Terminal,
-};
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Screen {
-    Instances,
-    ProfileSelect,
-}
+use crate::ui::profile::ProfileSelect;
+use crate::ui::screen::Screen;
+use crate::ui::ssm_instances::SSMInstancesScreen;
+use crate::utils::constants::env;
+use aws_config::BehaviorVersion;
+use color_eyre::Result;
+use crossterm::event::{self, Event, KeyEventKind};
+use ratatui::prelude::Backend;
+use ratatui::{widgets::ListState, Terminal};
+use std::time::Duration;
+use tokio::sync::mpsc;
 
 pub struct SSMApp {
-    screen: Screen,
+    pub current_screen: Box<dyn Screen>,
+
+    // Global / Shared data
     pub instances: Vec<InstanceInfo>,
-    instances_state: ListState,
     pub profiles: Vec<ProfileInfo>,
-    profiles_state: ListState,
-    current_profile: String,
-    loading: bool,
+    pub current_profile: String,
+    pub loading: bool,
+    pub client: aws_sdk_ssm::Client,
+    refresh_instances_requested: bool,
+    pending_profile_switch: Option<String>,
+
+    should_quit: bool,
+    session_active: bool,
+    pub session_end_tx: mpsc::Sender<()>,
+    pub session_end_rx: mpsc::Receiver<()>,
+
+    pub logger: crate::ui::logger::AppLogger,
 }
 
 impl SSMApp {
     pub async fn new() -> Result<Self> {
-        let current_profile = String::from("CURRENT"); //aws::profile::get_current_profile();
-        let profiles = crate::aws::profile::list::load_profiles().await?;
-        let instances = crate::aws::ssm::get_instances().await?;
+        let current_profile = detect_default_profile()
+            .await
+            .unwrap_or_else(|| "".to_string());
 
-        let mut instances_state = ListState::default();
-        if !instances.is_empty() {
-            instances_state.select(Some(0));
-        }
+        let profiles = crate::aws::profile::list::load_profiles()
+            .await
+            .map_err(|e| color_eyre::eyre::eyre!(e))?;
+
+        // Build the config using the detected/current profile
+        let config = aws_config::defaults(BehaviorVersion::latest())
+            .profile_name(&current_profile)
+            .load()
+            .await;
+
+        let client = aws_sdk_ssm::Client::new(&config);
 
         let mut profiles_state = ListState::default();
         // Highlight the current profile in the list
@@ -45,266 +59,181 @@ impl SSMApp {
             profiles_state.select(Some(0));
         }
 
+        let (tx, rx) = mpsc::channel(1);
+
         Ok(Self {
-            screen: Screen::Instances,
-            instances,
-            instances_state,
+            current_screen: Box::new(ProfileSelect::new(&profiles)),
+            instances: vec![],
             profiles,
-            profiles_state,
             current_profile,
             loading: false,
+            client,
+            refresh_instances_requested: false,
+            pending_profile_switch: None,
+            should_quit: false,
+            session_active: false,
+            session_end_tx: tx,
+            session_end_rx: rx,
+            logger: crate::ui::logger::AppLogger::default(),
         })
     }
 
-    fn next_instance(&mut self) {
-        if self.instances.is_empty() {
-            return;
-        }
-        let i = match self.instances_state.selected() {
-            Some(i) => {
-                if i >= self.instances.len() - 1 {
-                    0
-                } else {
-                    i + 1
-                }
-            }
-            None => 0,
-        };
-        self.instances_state.select(Some(i));
+    pub fn switch_profile(&mut self, profile_name: String) {
+        self.pending_profile_switch = Some(profile_name);
     }
 
-    fn previous_instance(&mut self) {
-        if self.instances.is_empty() {
-            return;
-        }
-        let i = match self.instances_state.selected() {
-            Some(i) => {
-                if i == 0 {
-                    self.instances.len() - 1
-                } else {
-                    i - 1
-                }
-            }
-            None => 0,
-        };
-        self.instances_state.select(Some(i));
-    }
+    pub async fn apply_pending_profile_switch(&mut self) -> Result<()> {
+        if let Some(profile_name) = self.pending_profile_switch.take() {
+            tracing::info!("Rebuilding client for profile: {}", profile_name);
 
-    fn next_profile(&mut self) {
-        if self.profiles.is_empty() {
-            return;
-        }
-        let i = match self.profiles_state.selected() {
-            Some(i) => {
-                if i >= self.profiles.len() - 1 {
-                    0
-                } else {
-                    i + 1
-                }
-            }
-            None => 0,
-        };
-        self.profiles_state.select(Some(i));
-    }
+            let config = aws_config::defaults(BehaviorVersion::latest())
+                .profile_name(&profile_name)
+                .load()
+                .await;
 
-    fn previous_profile(&mut self) {
-        if self.profiles.is_empty() {
-            return;
-        }
-        let i = match self.profiles_state.selected() {
-            Some(i) => {
-                if i == 0 {
-                    self.profiles.len() - 1
-                } else {
-                    i - 1
-                }
-            }
-            None => 0,
-        };
-        self.profiles_state.select(Some(i));
-    }
+            self.client = aws_sdk_ssm::Client::new(&config);
+            self.current_profile = profile_name;
+            std::env::set_var(env::AWS_PROFILE_ENV_VAR, &self.current_profile);
 
-    async fn select_profile(&mut self) -> Result<()> {
-        if let Some(i) = self.profiles_state.selected() {
-            self.current_profile = self.profiles[i].name.clone();
-            self.loading = true;
-
-            // In a real app, you'd set AWS_PROFILE here or use the profile in config
-            // For now, we'll just reload instances with the current environment
-            // Note: To actually use a different profile, you'd need to either:
-            // 1. Set std::env::set_var("AWS_PROFILE", &self.current_profile) before loading config
-            // 2. Pass profile_name to the config loader
-
-            self.instances = crate::aws::ssm::get_instances().await?;
-            self.instances_state.select(if self.instances.is_empty() {
-                None
-            } else {
-                Some(0)
-            });
-            self.loading = false;
+            // Optionally auto-refresh instances
+            self.refresh_instances_requested = true;
         }
         Ok(())
     }
 
-    fn toggle_screen(&mut self) {
-        self.screen = match self.screen {
-            Screen::Instances => Screen::ProfileSelect,
-            Screen::ProfileSelect => Screen::Instances,
-        };
+    pub async fn load_instances(&mut self) -> Result<()> {
+        self.loading = true;
+
+        self.instances = crate::aws::ssm::get_instances()
+            .await
+            .map_err(|e| color_eyre::eyre::eyre!(e))?;
+
+        self.loading = false;
+
+        // Refresh the current screen if it's the instances screen
+        if self.current_screen.name() == "SSM Instances" {
+            self.current_screen = Box::new(SSMInstancesScreen::new(&self.instances));
+        }
+
+        Ok(())
+    }
+
+    pub fn request_instance_refresh(&mut self) {
+        self.refresh_instances_requested = true;
+    }
+
+    pub fn current_screen(&self) -> &dyn Screen {
+        &*self.current_screen
+    }
+
+    /*
+    pub fn switch_screen(&mut self, new_screen: Box<dyn Screen>) {
+        self.current_screen = new_screen;
+    }
+    */
+
+    pub fn should_quit(&self) -> bool {
+        self.should_quit
+    }
+
+    pub fn quit(&mut self) {
+        self.should_quit = true
+    }
+
+    pub fn start_session(&mut self) {
+        self.session_active = true;
+    }
+
+    pub fn end_session(&mut self) {
+        self.session_active = false;
     }
 }
 
-pub fn ui_instances(f: &mut ratatui::Frame, app: &mut SSMApp) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // Current profile display
-            Constraint::Min(5),    // Instances list
-        ])
-        .split(f.area());
-
-    // Current profile display
-    let profile_text = format!("Active AWS Profile: {}", app.current_profile);
-    let profile_paragraph = Paragraph::new(profile_text)
-        .block(Block::default().borders(Borders::ALL))
-        .style(
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        );
-    f.render_widget(profile_paragraph, chunks[0]);
-
-    // Instances list
-    let items: Vec<ListItem> = app
-        .instances
-        .iter()
-        .map(|instance| {
-            let content = Line::from(vec![
-                Span::raw(format!("{:20} ", instance.instance_id)),
-                Span::raw(format!("{:15} ", instance.platform_type)),
-                Span::raw(format!("{:15} ", instance.platform_name)),
-                Span::raw(&instance.resource_type),
-            ]);
-            ListItem::new(content)
-        })
-        .collect();
-
-    let title = if app.loading {
-        "SSM Instances (Loading...)"
-    } else {
-        "SSM Instances (↑/↓ to navigate, 'p' to switch profile, 'q' to quit)"
-    };
-
-    let list = List::new(items)
-        .block(Block::default().title(title).borders(Borders::ALL))
-        .highlight_style(
-            Style::default()
-                .bg(Color::Blue)
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol(">> ");
-
-    f.render_stateful_widget(list, chunks[1], &mut app.instances_state);
-}
-
-pub fn ui_profile_select(f: &mut ratatui::Frame, app: &mut SSMApp) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // Current profile display
-            Constraint::Min(5),    // Profile list
-        ])
-        .split(f.area());
-
-    // Current profile display
-    let profile_text = format!("Current Profile: {}", app.current_profile);
-    let profile_paragraph = Paragraph::new(profile_text)
-        .block(Block::default().borders(Borders::ALL))
-        .style(
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        );
-    f.render_widget(profile_paragraph, chunks[0]);
-
-    // Profile list
-    let items: Vec<ListItem> = app
-        .profiles
-        .iter()
-        .map(|profile| {
-            let mut content = vec![Span::raw(&profile.name)];
-
-            if let Some(region) = &profile.region {
-                content.push(Span::styled(
-                    format!(" ({})", region),
-                    Style::default().fg(Color::Gray),
-                ));
-            }
-
-            ListItem::new(Line::from(content))
-        })
-        .collect();
-
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .title(
-                    "AWS Profiles (↑/↓ to navigate, Enter to select, 'p' to go back, 'q' to quit)",
-                )
-                .borders(Borders::ALL),
-        )
-        .highlight_style(
-            Style::default()
-                .bg(Color::Blue)
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol(">> ");
-
-    f.render_stateful_widget(list, chunks[1], &mut app.profiles_state);
-}
-
-pub fn ui(f: &mut ratatui::Frame, app: &mut SSMApp) {
-    match app.screen {
-        Screen::Instances => ui_instances(f, app),
-        Screen::ProfileSelect => ui_profile_select(f, app),
-    }
-}
-
-pub enum AppAction {
-    Quit,
-    SwitchToProfileSelect,
-}
-
-pub async fn run_ssm_app<B: ratatui::backend::Backend>(
-    terminal: &mut Terminal<B>,
-    mut app: SSMApp,
-) -> Result<AppAction> {
+pub async fn run_ssm_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut SSMApp) -> Result<()> {
     loop {
-        terminal.draw(|f| ui(f, &mut app))?;
+        // Only draw if no session is active
+        if !app.session_active {
+            if let Err(e) = terminal.draw(|frame| {
+                app.current_screen.draw(frame, app);
 
-        if let Event::Key(key) = event::read()? {
-            match app.screen {
-                Screen::Instances => match key.code {
-                    KeyCode::Char('q') => return Ok(AppAction::Quit),
-                    KeyCode::Char('p') => return Ok(AppAction::SwitchToProfileSelect),
-                    KeyCode::Down => app.next_instance(),
-                    KeyCode::Up => app.previous_instance(),
-                    _ => {}
-                },
-                Screen::ProfileSelect => match key.code {
-                    KeyCode::Char('q') => return Ok(AppAction::Quit),
-                    KeyCode::Char('p') => app.toggle_screen(),
-                    KeyCode::Down => app.next_profile(),
-                    KeyCode::Up => app.previous_profile(),
-                    KeyCode::Enter => {
-                        app.select_profile().await?;
-                        app.toggle_screen();
-                    }
-                    _ => {}
-                },
+                // Draw logger if visible (bottom panel)
+                if app.logger.visible {
+                    let areas = ratatui::layout::Layout::default()
+                        .direction(ratatui::layout::Direction::Vertical)
+                        .constraints([
+                            ratatui::layout::Constraint::Percentage(70),
+                            ratatui::layout::Constraint::Percentage(30),
+                        ])
+                        .split(frame.area());
+
+                    app.logger.draw(frame, areas[1]);
+                }
+            }) {
+                tracing::error!("Draw error: {}", e);
             }
         }
+
+        if !app.session_active {
+            if event::poll(Duration::from_millis(50))? {
+                if let Event::Key(key) = event::read()? {
+                    if key.kind == KeyEventKind::Press {
+                        let mut screen = std::mem::replace(
+                            &mut app.current_screen,
+                            Box::new(ProfileSelect::default()),
+                        );
+
+                        let next_screen = screen.handle_event(app, key.code);
+
+                        if let Some(new_screen) = next_screen {
+                            app.current_screen = new_screen;
+                        } else {
+                            // Put the old screen back if no switch happened
+                            app.current_screen = screen;
+                        }
+                    }
+                }
+            }
+        } else {
+            // Session is active - sleep, do not read keys
+            tokio::time::sleep(Duration::from_millis(100)).await
+        }
+
+        // Process pending profile switch
+        if app.pending_profile_switch.is_some() {
+            if let Err(e) = app.apply_pending_profile_switch().await {
+                tracing::error!("Failed to switch profile: {}", e);
+            }
+        }
+
+        // Check if background session has ended
+        if app.session_end_rx.try_recv().is_ok() {
+            app.end_session();
+
+            // Force clean redraw
+            let _ = terminal.clear();
+            let _ = terminal.draw(|frame| {
+                app.current_screen.draw(frame, app);
+            });
+        }
+
+        // Process refresh request
+        if app.refresh_instances_requested {
+            if let Err(e) = app.load_instances().await {
+                tracing::error!("Failed to load intances: {}", e);
+            }
+
+            if app.current_screen.name() == "SSM Instances" {
+                app.current_screen = Box::new(SSMInstancesScreen::new(&app.instances));
+            }
+            app.refresh_instances_requested = false;
+        }
+
+        if app.should_quit() {
+            break;
+        }
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
+
+    Ok(())
 }
