@@ -10,6 +10,7 @@ use which::which;
 pub struct InstanceInfo {
     pub instance_id: String,
     pub computer_name: String,
+    pub last_ping_date_time: String,
     pub ping_status: String,
     pub platform_type: String,
     pub platform_name: String,
@@ -47,6 +48,10 @@ pub async fn get_instances() -> Result<Vec<InstanceInfo>> {
             instances.push(InstanceInfo {
                 instance_id: instance.instance_id().unwrap_or("N/A").to_string(),
                 computer_name: instance.computer_name().unwrap_or("").to_string(),
+                last_ping_date_time: instance
+                    .last_ping_date_time()
+                    .map(|dt| dt.to_string())
+                    .unwrap_or_default(),
                 ping_status: instance
                     .ping_status()
                     .unwrap_or(&PingStatus::Inactive)

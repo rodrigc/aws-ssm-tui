@@ -1,24 +1,22 @@
 use crate::aws::ssm::InstanceInfo;
 use crate::ui::profile::ProfileSelect;
 use crate::ui::screen::Screen;
-use color_eyre::Result;
 use crossterm::event::KeyCode;
 use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState},
     Frame,
 };
 
 #[derive(Default, Debug)]
 pub struct SSMInstancesScreen {
-    pub instances_state: ListState,
+    pub instances_state: TableState,
 }
 
 impl SSMInstancesScreen {
     pub fn new(instances: &[InstanceInfo]) -> Self {
-        let mut state = ListState::default();
+        let mut state = TableState::default();
         if !instances.is_empty() {
             state.select(Some(0));
         }
@@ -54,20 +52,26 @@ impl Screen for SSMInstancesScreen {
 
         frame.render_widget(profile_para, chunks[0]);
 
-        // Instances List
-        let items: Vec<ListItem> = app
+        // Instances Table Header & Rows
+        let header = Row::new(vec![
+            Cell::from("ComputerName").style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Cell::from("InstanceId").style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Cell::from("LastPingDateTime").style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Cell::from("PingStatus").style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Cell::from("PlatformName").style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        ]);
+
+        let rows: Vec<Row> = app
             .instances
             .iter()
             .map(|instance| {
-                let content = Line::from(vec![
-                    Span::raw(format!("{:20} ", instance.computer_name)),
-                    Span::raw(format!("{:20} ", instance.instance_id)),
-                    Span::raw(format!("{:10} ", instance.ping_status)),
-                    Span::raw(format!("{:15} ", instance.platform_type)),
-                    Span::raw(format!("{:15} ", instance.platform_name)),
-                    Span::raw(&instance.resource_type),
-                ]);
-                ListItem::new(content)
+                Row::new(vec![
+                    Cell::from(instance.computer_name.as_str()),
+                    Cell::from(instance.instance_id.as_str()),
+                    Cell::from(instance.last_ping_date_time.as_str()),
+                    Cell::from(instance.ping_status.as_str()),
+                    Cell::from(instance.platform_name.as_str()),
+                ])
             })
             .collect();
 
@@ -77,17 +81,27 @@ impl Screen for SSMInstancesScreen {
             "SSM Instances (↑↓ navigate, s=start session, i=instances, p=profiles, r=refresh, q=quit)"
         };
 
-        let list = List::new(items)
-            .block(Block::default().title(title).borders(Borders::ALL))
-            .highlight_style(
-                Style::default()
-                    .bg(Color::Blue)
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .highlight_symbol(">> ");
+        let table = Table::new(
+            rows,
+            [
+                Constraint::Min(25),     // ComputerName
+                Constraint::Length(20),  // InstanceId
+                Constraint::Length(25),  // LastPingDateTime
+                Constraint::Length(15),  // PingStatus
+                Constraint::Min(20),     // PlatformName
+            ],
+        )
+        .header(header)
+        .block(Block::default().title(title).borders(Borders::ALL))
+        .row_highlight_style(
+            Style::default()
+                .bg(Color::Blue)
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol(">> ");
 
-        frame.render_stateful_widget(list, chunks[1], &mut self.instances_state.clone());
+        frame.render_stateful_widget(table, chunks[1], &mut self.instances_state.clone());
     }
 
     fn handle_event(
