@@ -134,6 +134,7 @@ dependencies = [
  "aws-types",
  "color-eyre",
  "crossterm",
+ "libc",
  "log",
  "ratatui",
  "scopeguard",
