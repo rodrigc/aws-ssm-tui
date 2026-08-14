@@ -146,7 +146,7 @@ impl SSMApp {
     pub async fn load_instances(&mut self) -> Result<()> {
         self.loading = true;
 
-        self.instances = crate::aws::ssm::get_instances()
+        self.instances = crate::aws::ssm::get_instances(&self.client)
             .await
             .map_err(|e| color_eyre::eyre::eyre!(e))?;
 
