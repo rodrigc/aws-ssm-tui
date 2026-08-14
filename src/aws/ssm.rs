@@ -194,3 +194,252 @@ pub async fn start_interactive_ssm_with_aws_cli(instance_id: &str, profile: &str
 
     Ok(())
 }
+
+/// A running background port-forward managed by the TUI (no terminal takeover).
+pub struct SpawnedPortForward {
+    pub instance_id: String,
+    pub remote_port: u16,
+    pub local_port: u16,
+    pub session_id: String,
+    pub child: std::process::Child,
+    /// Captured plugin stdout/stderr (continues to grow while the process runs).
+    pub output: std::sync::Arc<std::sync::Mutex<String>>,
+}
+
+/// Failure starting a port-forward; `detail` is meant for a TUI console popup.
+#[derive(Debug)]
+pub struct PortForwardError {
+    pub instance_id: String,
+    pub detail: String,
+}
+
+impl std::fmt::Display for PortForwardError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.detail)
+    }
+}
+
+impl std::error::Error for PortForwardError {}
+
+/// Starts an SSM port-forwarding session using the AWS Rust SDK +
+/// session-manager-plugin, **without** leaving the TUI or writing to stdout.
+///
+/// On success the plugin process keeps running in the background and is owned
+/// by the returned [`SpawnedPortForward`]. On failure, plugin/API output is
+/// collected into [`PortForwardError::detail`].
+pub async fn start_port_forwarding(
+    client: &Client,
+    instance_id: &str,
+    remote_port: u16,
+    local_port: u16,
+) -> std::result::Result<SpawnedPortForward, PortForwardError> {
+    let fail = |detail: String| PortForwardError {
+        instance_id: instance_id.to_string(),
+        detail,
+    };
+
+    let remote_port_str = remote_port.to_string();
+    let local_port_str = local_port.to_string();
+
+    let output = client
+        .start_session()
+        .target(instance_id)
+        .document_name("AWS-StartPortForwardingSession")
+        .parameters("portNumber", vec![remote_port_str.clone()])
+        .parameters("localPortNumber", vec![local_port_str.clone()])
+        .send()
+        .await
+        .map_err(|e| fail(format!("StartSession API failed:\n{e:#}")))?;
+
+    let session_id = output
+        .session_id()
+        .ok_or_else(|| fail("StartSession response missing session ID".into()))?
+        .to_string();
+    let stream_url = output
+        .stream_url()
+        .ok_or_else(|| fail("StartSession response missing stream URL".into()))?
+        .to_string();
+    let token_value = output
+        .token_value()
+        .ok_or_else(|| fail("StartSession response missing token value".into()))?
+        .to_string();
+
+    let plugin_input = serde_json::json!({
+        "Target":     instance_id,
+        "SessionId":  session_id,
+        "StreamUrl":  stream_url,
+        "TokenValue": token_value,
+    });
+
+    let parameters = serde_json::json!({
+        "Target": instance_id,
+        "DocumentName": "AWS-StartPortForwardingSession",
+        "Parameters": {
+            "portNumber": [remote_port_str],
+            "localPortNumber": [local_port_str],
+        }
+    });
+
+    let plugin_exe = which("session-manager-plugin").map_err(|_| {
+        fail(
+            "session-manager-plugin not found on PATH.\n\
+             Install the AWS Session Manager plugin and ensure it is available."
+                .into(),
+        )
+    })?;
+
+    let region = client
+        .config()
+        .region()
+        .map(|r| r.as_ref().to_string())
+        .unwrap_or_else(|| "us-east-1".to_string());
+
+    let profile = std::env::var(env::AWS_PROFILE_ENV_VAR).unwrap_or_default();
+
+    let mut child = Command::new(&plugin_exe)
+        .arg(plugin_input.to_string())
+        .arg(&region)
+        .arg("StartSession")
+        .arg(&profile)
+        .arg(parameters.to_string())
+        .arg("")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| fail(format!("Failed to spawn session-manager-plugin:\n{e}")))?;
+
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    {
+        let buf = captured.clone();
+        if let Some(stdout) = child.stdout.take() {
+            std::thread::spawn(move || drain_pipe(stdout, buf));
+        }
+    }
+    {
+        let buf = captured.clone();
+        if let Some(stderr) = child.stderr.take() {
+            std::thread::spawn(move || drain_pipe(stderr, buf));
+        }
+    }
+
+    // Wait briefly for the plugin to bind the local port or exit with an error.
+    let ready_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                // Let reader threads flush
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                let plugin_out = captured
+                    .lock()
+                    .map(|g| g.clone())
+                    .unwrap_or_default();
+                let mut detail = format!(
+                    "session-manager-plugin exited early (status: {status})\n\
+                     Instance: {instance_id}\n\
+                     Forward: localhost:{local_port} → remote:{remote_port}\n\
+                     SessionId: {session_id}\n"
+                );
+                if plugin_out.trim().is_empty() {
+                    detail.push_str("\n(no plugin output captured)");
+                } else {
+                    detail.push_str("\n--- plugin output ---\n");
+                    detail.push_str(&plugin_out);
+                }
+                // Best-effort session cleanup
+                let _ = client
+                    .terminate_session()
+                    .session_id(&session_id)
+                    .send()
+                    .await;
+                return Err(fail(detail));
+            }
+            Ok(None) => {}
+            Err(e) => {
+                return Err(fail(format!("Failed to poll session-manager-plugin: {e}")));
+            }
+        }
+
+        let plugin_out = captured
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default();
+        let lower = plugin_out.to_lowercase();
+        let looks_ready = (lower.contains("port") && lower.contains("opened"))
+            || local_port_is_listening(local_port);
+
+        if looks_ready || std::time::Instant::now() >= ready_deadline {
+            // Still running after timeout → treat as success (plugin often stays quiet).
+            return Ok(SpawnedPortForward {
+                instance_id: instance_id.to_string(),
+                remote_port,
+                local_port,
+                session_id,
+                child,
+                output: captured,
+            });
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
+/// Stop a background port-forward process and best-effort terminate the SSM session.
+pub async fn stop_port_forwarding(
+    client: &Client,
+    mut session: SpawnedPortForward,
+) -> String {
+    let _ = session.child.kill();
+    let status = session.child.wait();
+    let plugin_out = session
+        .output
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_default();
+
+    let _ = client
+        .terminate_session()
+        .session_id(&session.session_id)
+        .send()
+        .await;
+
+    let mut detail = format!(
+        "Stopped port forward for {}\n\
+         Forward was: localhost:{} → remote:{}\n\
+         SessionId: {}\n\
+         Process status: {:?}\n",
+        session.instance_id,
+        session.local_port,
+        session.remote_port,
+        session.session_id,
+        status
+    );
+    if !plugin_out.trim().is_empty() {
+        detail.push_str("\n--- plugin output ---\n");
+        detail.push_str(&plugin_out);
+    }
+    detail
+}
+
+fn drain_pipe(mut reader: impl std::io::Read, buf: std::sync::Arc<std::sync::Mutex<String>>) {
+    let mut chunk = [0u8; 1024];
+    loop {
+        match std::io::Read::read(&mut reader, &mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                if let Ok(mut guard) = buf.lock() {
+                    guard.push_str(&String::from_utf8_lossy(&chunk[..n]));
+                }
+            }
+            Err(_) => break,
+        }
+    }
+}
+
+fn local_port_is_listening(port: u16) -> bool {
+    use std::net::{SocketAddr, TcpStream};
+    use std::time::Duration;
+
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    TcpStream::connect_timeout(&addr, Duration::from_millis(50)).is_ok()
+}
