@@ -157,7 +157,21 @@ pub async fn start_interactive_ssm(client: &Client, instance_id: &str) -> Result
         .spawn()
         .context("Failed to spawn session-manager-plugin")?;
 
+    #[cfg(unix)]
+    let (prev_sigint, prev_sigquit) = unsafe {
+        (
+            libc::signal(libc::SIGINT, libc::SIG_IGN),
+            libc::signal(libc::SIGQUIT, libc::SIG_IGN),
+        )
+    };
+
     let status = child.wait()?;
+
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGINT, prev_sigint);
+        libc::signal(libc::SIGQUIT, prev_sigquit);
+    }
 
     if !status.success() {
         bail!("Plugin exited with code: {:?}", status.code());
