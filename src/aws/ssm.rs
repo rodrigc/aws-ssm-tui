@@ -1,7 +1,6 @@
 use crate::utils::constants::env;
 use anyhow::{bail, Context, Result};
-use aws_config::BehaviorVersion;
-use aws_sdk_ssm::{types::InstanceInformationStringFilter, types::PingStatus, Client};
+use aws_sdk_ssm::{types::PingStatus, Client};
 use serde_json;
 use std::process::{Command, Stdio};
 use which::which;
@@ -17,26 +16,12 @@ pub struct InstanceInfo {
     pub resource_type: String,
 }
 
-pub async fn get_instances() -> Result<Vec<InstanceInfo>> {
-    // Load AWS configuration
-    let config = aws_config::defaults(BehaviorVersion::latest()).load().await;
-    let client = Client::new(&config);
-
-    // Create the filter for AssociationStatus=Success
-    let filter = InstanceInformationStringFilter::builder()
-        .key("AssociationStatus")
-        .values("Success")
-        .build()?;
-
+pub async fn get_instances(client: &Client) -> Result<Vec<InstanceInfo>> {
     let mut instances = Vec::new();
     let mut next_token: Option<String> = None;
 
     loop {
-        // Call describe_instance_information with the filter
-        let mut request = client
-            .describe_instance_information()
-            .filters(filter.clone())
-            .max_results(50);
+        let mut request = client.describe_instance_information().max_results(50);
 
         if let Some(token) = next_token {
             request = request.next_token(token);
@@ -45,9 +30,16 @@ pub async fn get_instances() -> Result<Vec<InstanceInfo>> {
         let response = request.send().await?;
 
         for instance in response.instance_information_list() {
+            let instance_id = instance.instance_id().unwrap_or("N/A").to_string();
+            let computer_name = instance
+                .computer_name()
+                .filter(|s| !s.is_empty())
+                .unwrap_or(&instance_id)
+                .to_string();
+
             instances.push(InstanceInfo {
-                instance_id: instance.instance_id().unwrap_or("N/A").to_string(),
-                computer_name: instance.computer_name().unwrap_or("").to_string(),
+                instance_id,
+                computer_name,
                 last_ping_date_time: instance
                     .last_ping_date_time()
                     .map(|dt| dt.to_string())
@@ -76,6 +68,13 @@ pub async fn get_instances() -> Result<Vec<InstanceInfo>> {
             break;
         }
     }
+
+    instances.sort_by(|a, b| {
+        a.computer_name
+            .to_lowercase()
+            .cmp(&b.computer_name.to_lowercase())
+    });
+
     Ok(instances)
 }
 
