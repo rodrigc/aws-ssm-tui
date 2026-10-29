@@ -31,7 +31,7 @@ This project was built as part of the [Let's Get Rusty Accelerator](https://prod
 cargo run
 ```
 
-The crate name is `aws-profile-selector`. The app opens on the profile screen.
+The crate name is `aws-ssm-tui`. The app opens on the profile screen.
 
 ## Controls
 
