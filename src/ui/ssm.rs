@@ -17,10 +17,7 @@ use tokio::sync::mpsc;
 /// Async results from background port-forward start attempts.
 pub enum PortForwardEvent {
     Started(SpawnedPortForward),
-    Failed {
-        instance_id: String,
-        detail: String,
-    },
+    Failed { instance_id: String, detail: String },
 }
 
 /// Lightweight view of an active forward for the UI (no process handle).
@@ -29,7 +26,6 @@ pub struct PortForwardInfo {
     pub instance_id: String,
     pub remote_port: u16,
     pub local_port: u16,
-    pub session_id: String,
 }
 
 pub struct SSMApp {
@@ -164,7 +160,7 @@ impl SSMApp {
         self.refresh_instances_requested = true;
     }
 
-    pub fn current_screen(&self) -> &dyn Screen {
+    pub fn _current_screen(&self) -> &dyn Screen {
         &*self.current_screen
     }
 
@@ -185,12 +181,13 @@ impl SSMApp {
     }
 
     pub fn port_forward_info(&self, instance_id: &str) -> Option<PortForwardInfo> {
-        self.port_forwards.get(instance_id).map(|s| PortForwardInfo {
-            instance_id: s.instance_id.clone(),
-            remote_port: s.remote_port,
-            local_port: s.local_port,
-            session_id: s.session_id.clone(),
-        })
+        self.port_forwards
+            .get(instance_id)
+            .map(|s| PortForwardInfo {
+                instance_id: s.instance_id.clone(),
+                remote_port: s.remote_port,
+                local_port: s.local_port,
+            })
     }
 
     pub fn has_port_forward(&self, instance_id: &str) -> bool {
@@ -227,9 +224,13 @@ impl SSMApp {
         let tx = self.port_forward_tx.clone();
 
         tokio::spawn(async move {
-            let result =
-                crate::aws::ssm::start_port_forwarding(&client, &instance_id, remote_port, local_port)
-                    .await;
+            let result = crate::aws::ssm::start_port_forwarding(
+                &client,
+                &instance_id,
+                remote_port,
+                local_port,
+            )
+            .await;
 
             let event = match result {
                 Ok(spawned) => PortForwardEvent::Started(spawned),
@@ -262,10 +263,7 @@ impl SSMApp {
             } => {
                 self.port_forward_starting.remove(&instance_id);
                 tracing::error!("Port forward failed for {instance_id}: {detail}");
-                self.show_console(
-                    format!("Port Forward Failed — {instance_id}"),
-                    detail,
-                );
+                self.show_console(format!("Port Forward Failed — {instance_id}"), detail);
             }
         }
     }
@@ -292,17 +290,16 @@ impl SSMApp {
         for (id, session) in self.port_forwards.iter_mut() {
             match session.child.try_wait() {
                 Ok(Some(status)) => {
-                    let plugin_out = session
-                        .output
-                        .lock()
-                        .map(|g| g.clone())
-                        .unwrap_or_default();
+                    let plugin_out = session.output.lock().map(|g| g.clone()).unwrap_or_default();
                     let mut detail = format!(
                         "Port forward process exited for {}\n\
                          Forward was: localhost:{} → remote:{}\n\
                          SessionId: {}\n\
                          Status: {status}\n",
-                        session.instance_id, session.local_port, session.remote_port, session.session_id
+                        session.instance_id,
+                        session.local_port,
+                        session.remote_port,
+                        session.session_id
                     );
                     if !plugin_out.trim().is_empty() {
                         detail.push_str("\n--- plugin output ---\n");

@@ -11,9 +11,7 @@ pub struct InstanceInfo {
     pub computer_name: String,
     pub last_ping_date_time: String,
     pub ping_status: String,
-    pub platform_type: String,
     pub platform_name: String,
-    pub resource_type: String,
 }
 
 pub async fn get_instances(client: &Client) -> Result<Vec<InstanceInfo>> {
@@ -48,17 +46,7 @@ pub async fn get_instances(client: &Client) -> Result<Vec<InstanceInfo>> {
                     .ping_status()
                     .unwrap_or(&PingStatus::Inactive)
                     .to_string(),
-                platform_type: instance
-                    .platform_type()
-                    .map(|p| p.as_str())
-                    .unwrap_or("N/A")
-                    .to_string(),
                 platform_name: instance.platform_name().unwrap_or("N/A").to_string(),
-                resource_type: instance
-                    .resource_type()
-                    .map(|r| r.as_str())
-                    .unwrap_or("N/A")
-                    .to_string(),
             });
         }
 
@@ -78,7 +66,7 @@ pub async fn get_instances(client: &Client) -> Result<Vec<InstanceInfo>> {
     Ok(instances)
 }
 
-pub async fn start_ssm_session(
+pub async fn _start_ssm_session(
     client: &aws_sdk_ssm::Client,
     instance_id: &str,
     document_name: Option<&str>,
@@ -182,7 +170,7 @@ pub async fn start_interactive_ssm(client: &Client, instance_id: &str) -> Result
 
 /// Starts an SSM session by calling the AWS CLI directly.
 /// This is the most reliable method when using AWS SSO profiles.
-pub async fn start_interactive_ssm_with_aws_cli(instance_id: &str, profile: &str) -> Result<()> {
+pub async fn _start_interactive_ssm_with_aws_cli(instance_id: &str, profile: &str) -> Result<()> {
     println!(
         "Starting SSM session on {} using profile '{}'...",
         instance_id, profile
@@ -343,10 +331,7 @@ pub async fn start_port_forwarding(
             Ok(Some(status)) => {
                 // Let reader threads flush
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                let plugin_out = captured
-                    .lock()
-                    .map(|g| g.clone())
-                    .unwrap_or_default();
+                let plugin_out = captured.lock().map(|g| g.clone()).unwrap_or_default();
                 let mut detail = format!(
                     "session-manager-plugin exited early (status: {status})\n\
                      Instance: {instance_id}\n\
@@ -373,10 +358,7 @@ pub async fn start_port_forwarding(
             }
         }
 
-        let plugin_out = captured
-            .lock()
-            .map(|g| g.clone())
-            .unwrap_or_default();
+        let plugin_out = captured.lock().map(|g| g.clone()).unwrap_or_default();
         let lower = plugin_out.to_lowercase();
         let looks_ready = (lower.contains("port") && lower.contains("opened"))
             || local_port_is_listening(local_port);
@@ -398,17 +380,10 @@ pub async fn start_port_forwarding(
 }
 
 /// Stop a background port-forward process and best-effort terminate the SSM session.
-pub async fn stop_port_forwarding(
-    client: &Client,
-    mut session: SpawnedPortForward,
-) -> String {
+pub async fn stop_port_forwarding(client: &Client, mut session: SpawnedPortForward) -> String {
     let _ = session.child.kill();
     let status = session.child.wait();
-    let plugin_out = session
-        .output
-        .lock()
-        .map(|g| g.clone())
-        .unwrap_or_default();
+    let plugin_out = session.output.lock().map(|g| g.clone()).unwrap_or_default();
 
     let _ = client
         .terminate_session()
@@ -421,11 +396,7 @@ pub async fn stop_port_forwarding(
          Forward was: localhost:{} → remote:{}\n\
          SessionId: {}\n\
          Process status: {:?}\n",
-        session.instance_id,
-        session.local_port,
-        session.remote_port,
-        session.session_id,
-        status
+        session.instance_id, session.local_port, session.remote_port, session.session_id, status
     );
     if !plugin_out.trim().is_empty() {
         detail.push_str("\n--- plugin output ---\n");
