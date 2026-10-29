@@ -124,29 +124,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aws-profile-selector"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "aws-config",
- "aws-runtime",
- "aws-sdk-ssm",
- "aws-types",
- "color-eyre",
- "crossterm",
- "libc",
- "log",
- "ratatui",
- "scopeguard",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "tui-logger",
- "which",
-]
-
-[[package]]
 name = "aws-runtime"
 version = "1.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -455,6 +432,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b53543b4b86ed43f051644f704a98c7291b3618b67adf057ee77a366fa52fcaa"
 dependencies = [
  "xmlparser",
+]
+
+[[package]]
+name = "aws-ssm-tui"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aws-config",
+ "aws-runtime",
+ "aws-sdk-ssm",
+ "aws-types",
+ "color-eyre",
+ "crossterm",
+ "libc",
+ "log",
+ "ratatui",
+ "scopeguard",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "tui-logger",
+ "which",
 ]
 
 [[package]]
